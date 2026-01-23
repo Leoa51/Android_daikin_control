@@ -1,12 +1,13 @@
 package com.example.clim;
 
 import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
-import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
@@ -14,29 +15,25 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.fragment.app.Fragment;
 
-import java.util.List;
 import java.util.UUID;
 
 public class TestFragment extends Fragment {
 
-    private static final String TAG = "BLE_CLIM_DEBUG";
-
-    // UI Components
     private TextView textStatus;
     private TextView textLog;
     private EditText editHexCommand;
@@ -45,6 +42,7 @@ public class TestFragment extends Fragment {
     private Button buttonTest2;
     private Button buttonTest3;
     private Button buttonTest4;
+    private Button buttonTestNotif;
     private Button buttonSendCustom;
 
     private BluetoothAdapter bluetoothAdapter;
@@ -53,20 +51,15 @@ public class TestFragment extends Fragment {
     private BluetoothGattCharacteristic readCharacteristic;
 
     private boolean isConnected = false;
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private static final String DEVICE_MAC = "00:CC:3F:DC:6B:5C";
     private static final UUID SERVICE_UUID = UUID.fromString("2141e110-213a-11e6-b67b-9e71128cae77");
-
-    // --- CORRECTION CRITIQUE ICI : INVERSION DES UUIDS ---
-    // UUID finissant par 11 est NOTIFY (Lecture)
-    // UUID finissant par 12 est WRITE_NO_RESPONSE (Écriture)
-    private static final UUID READ_CHAR_UUID = UUID.fromString("2141e111-213a-11e6-b67b-9e71128cae77");
-    private static final UUID WRITE_CHAR_UUID = UUID.fromString("2141e112-213a-11e6-b67b-9e71128cae77");
-
-    private static final UUID CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+    private static final UUID WRITE_CHAR_UUID = UUID.fromString("2141e111-213a-11e6-b67b-9e71128cae77");
+    private static final UUID READ_CHAR_UUID = UUID.fromString("2141e112-213a-11e6-b67b-9e71128cae77");
 
     private static final int REQUEST_PERMISSIONS = 1;
+    private static final int REQUEST_NOTIFICATION_PERMISSION = 2;
+    private static final String CHANNEL_ID = "test_channel";
 
     @Nullable
     @Override
@@ -77,35 +70,7 @@ public class TestFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
-        initViews(view);
 
-        BluetoothManager bluetoothManager = (BluetoothManager) requireContext().getSystemService(Context.BLUETOOTH_SERVICE);
-        bluetoothAdapter = bluetoothManager.getAdapter();
-
-        buttonConnect.setOnClickListener(v -> handleConnectClick());
-
-        // Boutons configurés selon le protocole identifié
-        buttonTest1.setText("Get Status");
-        buttonTest1.setOnClickListener(v -> sendCommand("00 05 00 20 e0 00"));
-
-        buttonTest2.setText("Set ON");
-        buttonTest2.setOnClickListener(v -> sendCommand("00 06 40 20 20 01 01"));
-
-        buttonTest3.setText("Set OFF");
-        buttonTest3.setOnClickListener(v -> sendCommand("00 06 40 20 20 01 00"));
-
-        buttonTest4.setText("Get Info");
-        buttonTest4.setOnClickListener(v -> sendCommand("00 05 00 00 e0 00"));
-
-        buttonSendCustom.setOnClickListener(v -> {
-            String hex = editHexCommand.getText().toString().trim();
-            if (!hex.isEmpty()) sendCommand(hex);
-        });
-
-        logMessage("Correction Appliquée. UUIDs Inversés. Prêt.");
-    }
-
-    private void initViews(View view) {
         textStatus = view.findViewById(R.id.textStatus);
         textLog = view.findViewById(R.id.textLog);
         editHexCommand = view.findViewById(R.id.editHexCommand);
@@ -114,82 +79,161 @@ public class TestFragment extends Fragment {
         buttonTest2 = view.findViewById(R.id.buttonTest2);
         buttonTest3 = view.findViewById(R.id.buttonTest3);
         buttonTest4 = view.findViewById(R.id.buttonTest4);
+        buttonTestNotif = view.findViewById(R.id.buttonTestNotif);
         buttonSendCustom = view.findViewById(R.id.buttonSendCustom);
+
+        BluetoothManager bluetoothManager = (BluetoothManager) requireContext().getSystemService(Context.BLUETOOTH_SERVICE);
+        bluetoothAdapter = bluetoothManager.getAdapter();
+
+        createNotificationChannel();
+
+        if (bluetoothAdapter == null) {
+            Toast.makeText(requireContext(), "Bluetooth non supporté", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        buttonConnect.setOnClickListener(v -> {
+            if (checkPermissions()) {
+                if (isConnected) {
+                    disconnect();
+                } else {
+                    connectToDevice();
+                }
+            } else {
+                requestPermissions(new String[]{
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                }, REQUEST_PERMISSIONS);
+            }
+        });
+
+        buttonTest1.setOnClickListener(v -> sendCommand("00 06 00 00 00 00 00"));
+        buttonTest2.setOnClickListener(v -> sendCommand("00 0e 00 01 30 30 00 31 00 45 00 46 00 47 00"));
+        buttonTest3.setOnClickListener(v -> sendCommand("00 08 00 40 40 20 02 0b 80"));
+        buttonTest4.setOnClickListener(v -> sendCommand("00 06 00 00 20 15 00"));
+
+        buttonTestNotif.setOnClickListener(v -> sendTestNotification());
+
+        buttonSendCustom.setOnClickListener(v -> {
+            String hex = editHexCommand.getText().toString().trim();
+            if (!hex.isEmpty()) {
+                sendCommand(hex);
+            } else {
+                Toast.makeText(requireContext(), "Entrez une commande hex", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
-    private void handleConnectClick() {
-        if (checkPermissions()) {
-            if (isConnected) disconnect();
-            else connectToDevice();
-        } else {
-            requestPermissions(new String[]{
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-            }, REQUEST_PERMISSIONS);
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            CharSequence name = "Test Channel";
+            String description = "Channel pour les notifications de test";
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, name, importance);
+            channel.setDescription(description);
+
+            NotificationManager notificationManager = requireContext().getSystemService(NotificationManager.class);
+            notificationManager.createNotificationChannel(channel);
         }
+    }
+
+    private void sendTestNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATION_PERMISSION);
+                return;
+            }
+        }
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(requireContext(), CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("titre")
+                .setContentText("Vous êtes contents, il y a une notif dans l'app")
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true);
+
+        NotificationManagerCompat notificationManager = NotificationManagerCompat.from(requireContext());
+        notificationManager.notify(1, builder.build());
+
+        logMessage("Notification envoyée");
     }
 
     private boolean checkPermissions() {
-        if (getContext() == null) return false;
-        return ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                ActivityCompat.checkSelfPermission(getContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            return ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                    ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+        } else {
+            return ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED &&
+                    ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED &&
+                    ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_PERMISSIONS) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                connectToDevice();
+            } else {
+                Toast.makeText(requireContext(), "Permissions refusées", Toast.LENGTH_SHORT).show();
+            }
+        } else if (requestCode == REQUEST_NOTIFICATION_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                sendTestNotification();
+            } else {
+                Toast.makeText(requireContext(), "Permission notification refusée", Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     private void connectToDevice() {
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return;
+        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(requireContext(), "Permission manquante", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         textStatus.setText("Connexion...");
         logMessage("Connexion à " + DEVICE_MAC);
-
-        try {
-            BluetoothDevice device = bluetoothAdapter.getRemoteDevice(DEVICE_MAC);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback, BluetoothDevice.TRANSPORT_LE);
-            } else {
-                bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback);
-            }
-        } catch (IllegalArgumentException e) {
-            logMessage("Erreur MAC Address");
-        }
+        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(DEVICE_MAC);
+        bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback);
     }
 
     private void disconnect() {
         if (bluetoothGatt != null) {
-            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                bluetoothGatt.disconnect();
-                bluetoothGatt.close();
+            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return;
             }
+            bluetoothGatt.disconnect();
+            bluetoothGatt.close();
             bluetoothGatt = null;
         }
         isConnected = false;
-        updateUIState();
-        logMessage("Déconnecté.");
+        updateConnectionState();
+        logMessage("Déconnecté");
     }
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 isConnected = true;
-                logMessage("Connecté. Attente découverte services...");
-                mainHandler.postDelayed(() -> {
-                    if (bluetoothGatt != null && ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                        bluetoothGatt.discoverServices();
-                    }
-                }, 1000);
-                mainHandler.post(() -> {
-                    textStatus.setText("Connecté");
-                    updateUIState();
+                requireActivity().runOnUiThread(() -> {
+                    textStatus.setText("Connecté - Découverte...");
+                    logMessage("Connecté ! Découverte des services...");
                 });
+                gatt.discoverServices();
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 isConnected = false;
-                logMessage("Déconnecté (Status: " + status + ")");
-                if (bluetoothGatt != null) {
-                    bluetoothGatt.close();
-                    bluetoothGatt = null;
-                }
-                mainHandler.post(TestFragment.this::updateUIState);
+                requireActivity().runOnUiThread(() -> {
+                    updateConnectionState();
+                    logMessage("Déconnexion");
+                });
             }
         }
 
@@ -201,87 +245,91 @@ public class TestFragment extends Fragment {
                     writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID);
                     readCharacteristic = service.getCharacteristic(READ_CHAR_UUID);
 
-                    if (writeCharacteristic != null && readCharacteristic != null) {
-                        logMessage("Charactéristiques trouvées (CORRIGÉES).");
+                    if (writeCharacteristic != null) {
+                        int properties = writeCharacteristic.getProperties();
+                        requireActivity().runOnUiThread(() -> {
+                            textStatus.setText("Connecté");
+                            updateConnectionState();
+                            logMessage("Service trouvé ! UUID Write: " + WRITE_CHAR_UUID);
+                            logMessage("Propriétés Write: " + properties);
+                            logMessage("  - WRITE: " + ((properties & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0));
+                            logMessage("  - WRITE_NO_RESPONSE: " + ((properties & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0));
+                            logMessage("Prêt à envoyer des commandes");
 
-                        // DEBUG POUR CONFIRMATION
-                        int writeProps = writeCharacteristic.getProperties();
-                        logMessage("WRITE Props: " + writeProps + " (Doit être 4 ou 12)");
-
-                        int readProps = readCharacteristic.getProperties();
-                        logMessage("READ Props: " + readProps + " (Doit être 16)");
-
-                        enableNotifications(gatt, readCharacteristic);
+                            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                                if (readCharacteristic != null) {
+                                    gatt.setCharacteristicNotification(readCharacteristic, true);
+                                    logMessage("Notifications activées sur READ");
+                                }
+                            }
+                        });
                     } else {
-                        logMessage("ERREUR: UUIDs introuvables.");
+                        requireActivity().runOnUiThread(() -> logMessage("ERREUR: Caractéristique Write non trouvée"));
                     }
                 } else {
-                    logMessage("ERREUR: Service UUID introuvable.");
+                    requireActivity().runOnUiThread(() -> logMessage("ERREUR: Service non trouvé"));
                 }
             }
         }
 
         @Override
         public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-            logMessage("Write: " + (status == BluetoothGatt.GATT_SUCCESS ? "SUCCÈS" : "ÉCHEC " + status));
+            String statusText = (status == BluetoothGatt.GATT_SUCCESS) ? "Succès" : "Échec (" + status + ")";
+            requireActivity().runOnUiThread(() -> logMessage("Write: " + statusText));
         }
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
             byte[] data = characteristic.getValue();
-            logMessage("RX << " + bytesToHex(data));
-        }
-
-        @Override
-        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-            logMessage("Notifications (CCCD): " + (status == BluetoothGatt.GATT_SUCCESS ? "ACTIVÉES" : "ÉCHEC " + status));
+            String hexData = bytesToHex(data);
+            requireActivity().runOnUiThread(() -> logMessage("Notification reçue: " + hexData));
         }
     };
 
-    private void enableNotifications(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return;
-
-        gatt.setCharacteristicNotification(characteristic, true);
-
-        BluetoothGattDescriptor descriptor = characteristic.getDescriptor(CCCD_UUID);
-        if (descriptor != null) {
-            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-            gatt.writeDescriptor(descriptor);
-        } else {
-            // Si l'UUID est bon, le CCCD devrait être là maintenant.
-            logMessage("ERREUR: CCCD toujours introuvable (Etrange avec le bon UUID).");
-            // Fallback: chercher n'importe quel descripteur
-            for (BluetoothGattDescriptor d : characteristic.getDescriptors()) {
-                d.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                gatt.writeDescriptor(d);
-            }
-        }
-    }
-
     private void sendCommand(String hexString) {
         if (!isConnected || writeCharacteristic == null) {
-            logMessage("Non connecté.");
+            Toast.makeText(requireContext(), "Non connecté", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (bluetoothGatt == null) {
+            Toast.makeText(requireContext(), "GATT null", Toast.LENGTH_SHORT).show();
             return;
         }
 
         try {
             byte[] command = hexStringToByteArray(hexString);
-            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return;
+            logMessage("Envoi: " + hexString);
 
-            // Comme la propriété est 4 (WRITE_NO_RESPONSE), on force ce mode.
-            // C'est maintenant aligné avec les logs.
-            writeCharacteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-
-            writeCharacteristic.setValue(command);
-            logMessage("TX >> " + hexString);
-
-            boolean success = bluetoothGatt.writeCharacteristic(writeCharacteristic);
-            if (!success) {
-                logMessage("ERREUR API writeCharacteristic (False)");
+            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                logMessage("ERREUR: Permission manquante");
+                return;
             }
 
+            int writeType = writeCharacteristic.getWriteType();
+            logMessage("Write type actuel: " + writeType);
+
+            if ((writeCharacteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                writeCharacteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
+                logMessage("Mode: WRITE_TYPE_NO_RESPONSE");
+            } else if ((writeCharacteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) {
+                writeCharacteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+                logMessage("Mode: WRITE_TYPE_DEFAULT");
+            } else {
+                logMessage("ERREUR: Aucun type d'écriture supporté");
+                return;
+            }
+
+            writeCharacteristic.setValue(command);
+            boolean success = bluetoothGatt.writeCharacteristic(writeCharacteristic);
+
+            if (!success) {
+                logMessage("ERREUR: writeCharacteristic() a retourné false");
+            } else {
+                logMessage("Commande mise en file d'attente");
+            }
         } catch (Exception e) {
-            logMessage("Exception: " + e.getMessage());
+            logMessage("ERREUR: " + e.getMessage());
         }
     }
 
@@ -290,29 +338,33 @@ public class TestFragment extends Fragment {
         int len = hex.length();
         byte[] data = new byte[len / 2];
         for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4) + Character.digit(hex.charAt(i + 1), 16));
+            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
+                    + Character.digit(hex.charAt(i + 1), 16));
         }
         return data;
     }
 
     private String bytesToHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02X ", b));
+        for (byte b : bytes) {
+            sb.append(String.format("%02X ", b));
+        }
         return sb.toString().trim();
     }
 
     private void logMessage(String message) {
-        Log.d(TAG, message);
-        mainHandler.post(() -> {
-            if (textLog == null) return;
+        requireActivity().runOnUiThread(() -> {
             String timestamp = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date());
-            if (textLog.length() > 5000) textLog.setText("");
-            textLog.append("\n[" + timestamp + "] " + message);
+            String currentLog = textLog.getText().toString();
+            if (currentLog.equals("En attente...")) {
+                textLog.setText("[" + timestamp + "] " + message);
+            } else {
+                textLog.append("\n[" + timestamp + "] " + message);
+            }
         });
     }
 
-    private void updateUIState() {
-        if (buttonConnect == null) return;
+    private void updateConnectionState() {
         buttonConnect.setText(isConnected ? "Déconnecter" : "Connecter");
         textStatus.setText(isConnected ? "Connecté" : "Déconnecté");
         buttonTest1.setEnabled(isConnected);

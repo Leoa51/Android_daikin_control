@@ -3,15 +3,7 @@ package com.example.clim;
 import android.Manifest;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGatt;
-import android.bluetooth.BluetoothGattCallback;
-import android.bluetooth.BluetoothGattCharacteristic;
-import android.bluetooth.BluetoothGattService;
-import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothProfile;
-import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -30,8 +22,6 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.fragment.app.Fragment;
 
-import java.util.UUID;
-
 public class TestFragment extends Fragment {
 
     private TextView textStatus;
@@ -43,19 +33,15 @@ public class TestFragment extends Fragment {
     private Button buttonTest3;
     private Button buttonTest4;
     private Button buttonTestNotif;
+    private Button buttonStartServer;
+    private Button buttonStopServer;
+    private Button buttonShowIP;
+    private Button buttonDebugNetwork;
     private Button buttonSendCustom;
 
-    private BluetoothAdapter bluetoothAdapter;
-    private BluetoothGatt bluetoothGatt;
-    private BluetoothGattCharacteristic writeCharacteristic;
-    private BluetoothGattCharacteristic readCharacteristic;
-
+    private ClimBluetoothManager btManager;
     private boolean isConnected = false;
-
-    private static final String DEVICE_MAC = "00:CC:3F:DC:6B:5C";
-    private static final UUID SERVICE_UUID = UUID.fromString("2141e110-213a-11e6-b67b-9e71128cae77");
-    private static final UUID WRITE_CHAR_UUID = UUID.fromString("2141e111-213a-11e6-b67b-9e71128cae77");
-    private static final UUID READ_CHAR_UUID = UUID.fromString("2141e112-213a-11e6-b67b-9e71128cae77");
+    private boolean serverRunning = false;
 
     private static final int REQUEST_PERMISSIONS = 1;
     private static final int REQUEST_NOTIFICATION_PERMISSION = 2;
@@ -80,49 +66,115 @@ public class TestFragment extends Fragment {
         buttonTest3 = view.findViewById(R.id.buttonTest3);
         buttonTest4 = view.findViewById(R.id.buttonTest4);
         buttonTestNotif = view.findViewById(R.id.buttonTestNotif);
+        buttonStartServer = view.findViewById(R.id.buttonStartServer);
+        buttonStopServer = view.findViewById(R.id.buttonStopServer);
+        buttonShowIP = view.findViewById(R.id.buttonShowIP);
+        buttonDebugNetwork = view.findViewById(R.id.buttonDebugNetwork);
         buttonSendCustom = view.findViewById(R.id.buttonSendCustom);
-
-        BluetoothManager bluetoothManager = (BluetoothManager) requireContext().getSystemService(Context.BLUETOOTH_SERVICE);
-        bluetoothAdapter = bluetoothManager.getAdapter();
 
         createNotificationChannel();
 
-        if (bluetoothAdapter == null) {
-            Toast.makeText(requireContext(), "Bluetooth non supporté", Toast.LENGTH_SHORT).show();
-            return;
-        }
+        btManager = ClimBluetoothManager.getInstance(requireContext());
 
-        buttonConnect.setOnClickListener(v -> {
-            if (checkPermissions()) {
-                if (isConnected) {
-                    disconnect();
-                } else {
-                    connectToDevice();
-                }
-            } else {
-                requestPermissions(new String[]{
-                        Manifest.permission.BLUETOOTH_SCAN,
-                        Manifest.permission.BLUETOOTH_CONNECT,
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                }, REQUEST_PERMISSIONS);
+        btManager.addConnectionListener(new ClimBluetoothManager.ConnectionListener() {
+            @Override
+            public void onConnectionStateChanged(boolean connected) {
+                requireActivity().runOnUiThread(() -> {
+                    isConnected = connected;
+                    updateConnectionState();
+                    textStatus.setText(connected ? "Connecté" : "Déconnecté");
+                    logMessage(connected ? "Connecté !" : "Déconnecté");
+                });
+            }
+
+            @Override
+            public void onServicesDiscovered() {
+                requireActivity().runOnUiThread(() -> {
+                    logMessage("Services découverts, prêt à envoyer des commandes");
+                });
             }
         });
 
-        buttonTest1.setOnClickListener(v -> sendCommand("00 06 00 00 00 00 00"));
-        buttonTest2.setOnClickListener(v -> sendCommand("00 0e 00 01 30 30 00 31 00 45 00 46 00 47 00"));
-        buttonTest3.setOnClickListener(v -> sendCommand("00 08 00 40 40 20 02 0b 80"));
-        buttonTest4.setOnClickListener(v -> sendCommand("00 06 00 00 20 15 00"));
+        btManager.addNotificationListener(data -> {
+            requireActivity().runOnUiThread(() -> {
+                logMessage("Notification reçue: " + bytesToHex(data));
+            });
+        });
+
+        buttonConnect.setOnClickListener(v -> {
+            if (checkPermissions()) {
+                if (btManager.isConnected()) {
+                    btManager.disconnect();
+                } else {
+                    logMessage("Connexion en cours...");
+                    btManager.connect();
+                }
+            } else {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    requestPermissions(new String[]{
+                            Manifest.permission.BLUETOOTH_SCAN,
+                            Manifest.permission.BLUETOOTH_CONNECT
+                    }, REQUEST_PERMISSIONS);
+                } else {
+                    requestPermissions(new String[]{
+                            Manifest.permission.BLUETOOTH,
+                            Manifest.permission.BLUETOOTH_ADMIN,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                    }, REQUEST_PERMISSIONS);
+                }
+            }
+        });
+
+        buttonTest1.setOnClickListener(v -> {
+            logMessage("Envoi commande: Power ON");
+            boolean success = btManager.sendCommand(DaikinCommands.powerOn());
+            if (!success) {
+                logMessage("ERREUR: Échec envoi Power ON");
+            }
+        });
+
+        buttonTest2.setOnClickListener(v -> {
+            logMessage("Envoi commande: Power OFF");
+            boolean success = btManager.sendCommand(DaikinCommands.powerOff());
+            if (!success) {
+                logMessage("ERREUR: Échec envoi Power OFF");
+            }
+        });
+
+        buttonTest3.setOnClickListener(v -> {
+            logMessage("Envoi commande: Mode COOL");
+            boolean success = btManager.sendCommand(DaikinCommands.setMode(DaikinCommands.Mode.COOL));
+            if (!success) {
+                logMessage("ERREUR: Échec envoi Mode COOL");
+            }
+        });
+
+        buttonTest4.setOnClickListener(v -> {
+            logMessage("Envoi commande: Température 24°C");
+            boolean success = btManager.sendCommand(DaikinCommands.setTemperature(24));
+            if (!success) {
+                logMessage("ERREUR: Échec envoi Température");
+            }
+        });
 
         buttonTestNotif.setOnClickListener(v -> sendTestNotification());
+
+        buttonStartServer.setOnClickListener(v -> startHttpServer());
+        buttonStopServer.setOnClickListener(v -> stopHttpServer());
+        buttonShowIP.setOnClickListener(v -> showServerInfo());
+        buttonDebugNetwork.setOnClickListener(v -> showAllNetworkInterfaces());
 
         buttonSendCustom.setOnClickListener(v -> {
             String hex = editHexCommand.getText().toString().trim();
             if (!hex.isEmpty()) {
-                sendCommand(hex);
+                sendCustomCommand(hex);
             } else {
                 Toast.makeText(requireContext(), "Entrez une commande hex", Toast.LENGTH_SHORT).show();
             }
         });
+
+        updateConnectionState();
+        updateServerButtons();
     }
 
     private void createNotificationChannel() {
@@ -148,15 +200,16 @@ public class TestFragment extends Fragment {
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(requireContext(), CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("titre")
-                .setContentText("Vous êtes contents, il y a une notif dans l'app")
+                .setContentTitle("Test Notification")
+                .setContentText("Ceci est une notification de test depuis TestFragment")
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setAutoCancel(true);
 
         NotificationManagerCompat notificationManager = NotificationManagerCompat.from(requireContext());
-        notificationManager.notify(1, builder.build());
-
-        logMessage("Notification envoyée");
+        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            notificationManager.notify(1, builder.build());
+            logMessage("Notification envoyée");
+        }
     }
 
     private boolean checkPermissions() {
@@ -175,9 +228,11 @@ public class TestFragment extends Fragment {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                connectToDevice();
+                logMessage("Permissions accordées, connexion...");
+                btManager.connect();
             } else {
                 Toast.makeText(requireContext(), "Permissions refusées", Toast.LENGTH_SHORT).show();
+                logMessage("Permissions refusées");
             }
         } else if (requestCode == REQUEST_NOTIFICATION_PERMISSION) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
@@ -188,145 +243,19 @@ public class TestFragment extends Fragment {
         }
     }
 
-    private void connectToDevice() {
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(requireContext(), "Permission manquante", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        textStatus.setText("Connexion...");
-        logMessage("Connexion à " + DEVICE_MAC);
-        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(DEVICE_MAC);
-        bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback);
-    }
-
-    private void disconnect() {
-        if (bluetoothGatt != null) {
-            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-            bluetoothGatt.disconnect();
-            bluetoothGatt.close();
-            bluetoothGatt = null;
-        }
-        isConnected = false;
-        updateConnectionState();
-        logMessage("Déconnecté");
-    }
-
-    private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
-        @Override
-        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                isConnected = true;
-                requireActivity().runOnUiThread(() -> {
-                    textStatus.setText("Connecté - Découverte...");
-                    logMessage("Connecté ! Découverte des services...");
-                });
-                gatt.discoverServices();
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                isConnected = false;
-                requireActivity().runOnUiThread(() -> {
-                    updateConnectionState();
-                    logMessage("Déconnexion");
-                });
-            }
-        }
-
-        @Override
-        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                BluetoothGattService service = gatt.getService(SERVICE_UUID);
-                if (service != null) {
-                    writeCharacteristic = service.getCharacteristic(WRITE_CHAR_UUID);
-                    readCharacteristic = service.getCharacteristic(READ_CHAR_UUID);
-
-                    if (writeCharacteristic != null) {
-                        int properties = writeCharacteristic.getProperties();
-                        requireActivity().runOnUiThread(() -> {
-                            textStatus.setText("Connecté");
-                            updateConnectionState();
-                            logMessage("Service trouvé ! UUID Write: " + WRITE_CHAR_UUID);
-                            logMessage("Propriétés Write: " + properties);
-                            logMessage("  - WRITE: " + ((properties & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0));
-                            logMessage("  - WRITE_NO_RESPONSE: " + ((properties & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0));
-                            logMessage("Prêt à envoyer des commandes");
-
-                            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                                if (readCharacteristic != null) {
-                                    gatt.setCharacteristicNotification(readCharacteristic, true);
-                                    logMessage("Notifications activées sur READ");
-                                }
-                            }
-                        });
-                    } else {
-                        requireActivity().runOnUiThread(() -> logMessage("ERREUR: Caractéristique Write non trouvée"));
-                    }
-                } else {
-                    requireActivity().runOnUiThread(() -> logMessage("ERREUR: Service non trouvé"));
-                }
-            }
-        }
-
-        @Override
-        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-            String statusText = (status == BluetoothGatt.GATT_SUCCESS) ? "Succès" : "Échec (" + status + ")";
-            requireActivity().runOnUiThread(() -> logMessage("Write: " + statusText));
-        }
-
-        @Override
-        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-            byte[] data = characteristic.getValue();
-            String hexData = bytesToHex(data);
-            requireActivity().runOnUiThread(() -> logMessage("Notification reçue: " + hexData));
-        }
-    };
-
-    private void sendCommand(String hexString) {
-        if (!isConnected || writeCharacteristic == null) {
+    private void sendCustomCommand(String hexString) {
+        if (!btManager.isConnected()) {
             Toast.makeText(requireContext(), "Non connecté", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        if (bluetoothGatt == null) {
-            Toast.makeText(requireContext(), "GATT null", Toast.LENGTH_SHORT).show();
+            logMessage("ERREUR: Non connecté");
             return;
         }
 
         try {
             byte[] command = hexStringToByteArray(hexString);
-            logMessage("Envoi: " + hexString);
-
-            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                logMessage("ERREUR: Permission manquante");
-                return;
-            }
-
-            int writeType = writeCharacteristic.getWriteType();
-            logMessage("Write type actuel: " + writeType);
-
-            if ((writeCharacteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                writeCharacteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-                logMessage("Mode: WRITE_TYPE_NO_RESPONSE");
-            } else if ((writeCharacteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) {
-                writeCharacteristic.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-                logMessage("Mode: WRITE_TYPE_DEFAULT");
-            } else {
-                logMessage("ERREUR: Aucun type d'écriture supporté");
-                return;
-            }
-
-            writeCharacteristic.setValue(command);
-            boolean success = bluetoothGatt.writeCharacteristic(writeCharacteristic);
-
+            logMessage("Envoi commande custom: " + hexString);
+            boolean success = btManager.sendCommand(command);
             if (!success) {
-                logMessage("ERREUR: writeCharacteristic() a retourné false");
-            } else {
-                logMessage("Commande mise en file d'attente");
+                logMessage("ERREUR: Échec envoi commande custom");
             }
         } catch (Exception e) {
             logMessage("ERREUR: " + e.getMessage());
@@ -352,6 +281,110 @@ public class TestFragment extends Fragment {
         return sb.toString().trim();
     }
 
+    private void startHttpServer() {
+        Intent serviceIntent = new Intent(requireContext(), NotificationHttpService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            requireContext().startForegroundService(serviceIntent);
+        } else {
+            requireContext().startService(serviceIntent);
+        }
+        serverRunning = true;
+        updateServerButtons();
+        logMessage("Serveur HTTP démarré");
+        showServerInfo();
+    }
+
+    private void stopHttpServer() {
+        Intent serviceIntent = new Intent(requireContext(), NotificationHttpService.class);
+        requireContext().stopService(serviceIntent);
+        serverRunning = false;
+        updateServerButtons();
+        logMessage("Serveur HTTP arrêté");
+    }
+
+    private void showServerInfo() {
+        String ip = getWifiIpAddress();
+        if (ip != null) {
+            String info = "Serveur accessible:\n" +
+                    "Notification: http://" + ip + ":8080/notify?title=Test&message=Hello\n" +
+                    "Clim: http://" + ip + ":8080/clim?command=ON";
+            logMessage(info);
+            Toast.makeText(requireContext(), "IP: " + ip, Toast.LENGTH_LONG).show();
+        } else {
+            logMessage("Impossible de récupérer l'adresse IP WiFi");
+            Toast.makeText(requireContext(), "WiFi non connecté", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showAllNetworkInterfaces() {
+        try {
+            logMessage("=== Interfaces réseau détectées ===");
+            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface netInterface = interfaces.nextElement();
+                String name = netInterface.getName();
+
+                logMessage("Interface: " + name);
+
+                java.util.Enumeration<java.net.InetAddress> addresses = netInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    java.net.InetAddress addr = addresses.nextElement();
+                    if (addr instanceof java.net.Inet4Address && !addr.isLoopbackAddress()) {
+                        logMessage("  -> IP: " + addr.getHostAddress());
+                    }
+                }
+            }
+            logMessage("===================================");
+        } catch (Exception e) {
+            logMessage("Erreur: " + e.getMessage());
+        }
+    }
+
+    private String getWifiIpAddress() {
+        try {
+            java.net.NetworkInterface netInterface = java.net.NetworkInterface.getByName("wlan0");
+            if (netInterface != null) {
+                java.util.Enumeration<java.net.InetAddress> addresses = netInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    java.net.InetAddress addr = addresses.nextElement();
+                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+
+            java.net.NetworkInterface apInterface = java.net.NetworkInterface.getByName("ap0");
+            if (apInterface != null) {
+                java.util.Enumeration<java.net.InetAddress> addresses = apInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    java.net.InetAddress addr = addresses.nextElement();
+                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+
+            android.net.wifi.WifiManager wifiManager = (android.net.wifi.WifiManager)
+                    requireContext().getApplicationContext().getSystemService(android.content.Context.WIFI_SERVICE);
+            if (wifiManager != null) {
+                android.net.wifi.WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+                int ip = wifiInfo.getIpAddress();
+
+                if (ip != 0) {
+                    return String.format("%d.%d.%d.%d",
+                            (ip & 0xff),
+                            (ip >> 8 & 0xff),
+                            (ip >> 16 & 0xff),
+                            (ip >> 24 & 0xff));
+                }
+            }
+        } catch (Exception e) {
+            android.util.Log.e("TestFragment", "Erreur IP: " + e.getMessage());
+        }
+        return null;
+    }
+
     private void logMessage(String message) {
         requireActivity().runOnUiThread(() -> {
             String timestamp = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date());
@@ -361,6 +394,9 @@ public class TestFragment extends Fragment {
             } else {
                 textLog.append("\n[" + timestamp + "] " + message);
             }
+
+            final android.widget.ScrollView scrollView = (android.widget.ScrollView) textLog.getParent();
+            scrollView.post(() -> scrollView.fullScroll(android.view.View.FOCUS_DOWN));
         });
     }
 
@@ -375,9 +411,13 @@ public class TestFragment extends Fragment {
         buttonSendCustom.setEnabled(isConnected);
     }
 
+    private void updateServerButtons() {
+        buttonStartServer.setEnabled(!serverRunning);
+        buttonStopServer.setEnabled(serverRunning);
+    }
+
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        disconnect();
     }
 }

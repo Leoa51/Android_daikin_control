@@ -304,6 +304,10 @@ public class NotificationHttpService extends Service {
                             success = btManager.sendCommand(DaikinCommands.setMode(DaikinCommands.Mode.DRY));
                             response = "Mode DRY activé";
                             break;
+                        case "VENTILATION":
+                            success = btManager.sendCommand(DaikinCommands.setMode(DaikinCommands.Mode.VENTILATION));
+                            response = "Mode VENTILATION activé";
+                            break;
                         default:
                             sendResponse(out, 400, "Erreur: mode invalide (AUTO, COOL, HEAT, FAN, DRY)");
                             return;
@@ -337,36 +341,47 @@ public class NotificationHttpService extends Service {
                         return;
                     }
                     switch (parameter.toUpperCase()) {
-                        case "AUTO":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.AUTO));
-                            response = "Ventilateur AUTO";
-                            break;
-                        case "SILENT":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.SILENT));
-                            response = "Ventilateur SILENCIEUX";
-                            break;
+//                        case "AUTO":
+//                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.AUTO));
+//                            response = "Ventilateur AUTO";
+//                            break;
+//                        case "SILENT":
+//                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.SILENT));
+//                            response = "Ventilateur SILENCIEUX";
+//                            break;
                         case "1":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.LEVEL1));
-                            response = "Ventilateur niveau 1";
+                            success = btManager.sendCommand(DaikinCommands.setCoolFanSpeed(DaikinCommands.FanSpeed.LOW));
+                            Thread.sleep(500);
+                            success = btManager.sendCommand(DaikinCommands.setHeetFanSpeed(DaikinCommands.FanSpeed.LOW));
+
+                            response = "Ventilateur vitesse 1";
                             break;
                         case "2":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.LEVEL2));
-                            response = "Ventilateur niveau 2";
+                            success = btManager.sendCommand(DaikinCommands.setCoolFanSpeed(DaikinCommands.FanSpeed.MEDIUM_LOW));
+                            Thread.sleep(500);                            success = btManager.sendCommand(DaikinCommands.setHeetFanSpeed(DaikinCommands.FanSpeed.MEDIUM_LOW));
+                            response = "Ventilateur vitesse 2";
                             break;
                         case "3":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.LEVEL3));
-                            response = "Ventilateur niveau 3";
+                            success = btManager.sendCommand(DaikinCommands.setCoolFanSpeed(DaikinCommands.FanSpeed.MEDIUM));
+                            Thread.sleep(500);
+                            success = btManager.sendCommand(DaikinCommands.setHeetFanSpeed(DaikinCommands.FanSpeed.MEDIUM));
+                            response = "Ventilateur vitesse 3";
                             break;
                         case "4":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.LEVEL4));
-                            response = "Ventilateur niveau 4";
+                            success = btManager.sendCommand(DaikinCommands.setCoolFanSpeed(DaikinCommands.FanSpeed.MEDIUM_HIGH));
+                            Thread.sleep(500);
+                            success = btManager.sendCommand(DaikinCommands.setHeetFanSpeed(DaikinCommands.FanSpeed.MEDIUM_HIGH));
+                            response = "Ventilateur vitesse 4";
                             break;
                         case "5":
-                            success = btManager.sendCommand(DaikinCommands.setFanSpeed(DaikinCommands.FanSpeed.LEVEL5));
-                            response = "Ventilateur niveau 5";
+                            success = btManager.sendCommand(DaikinCommands.setCoolFanSpeed(DaikinCommands.FanSpeed.HIGH));
+                            Thread.sleep(500);
+                            success = btManager.sendCommand(DaikinCommands.setHeetFanSpeed(DaikinCommands.FanSpeed.HIGH));
+                            response = "Ventilateur vitesse 5";
                             break;
                         default:
-                            sendResponse(out, 400, "Erreur: vitesse ventilateur invalide (AUTO, SILENT, 1-5)");
+//                            sendResponse(out, 400, "Erreur: vitesse ventilateur invalide (AUTO, SILENT, 1-5)");
+                            sendResponse(out, 400, "Erreur: vitesse ventilateur invalide (1-5)");
                             return;
                     }
                     break;

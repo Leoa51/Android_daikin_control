@@ -59,11 +59,11 @@ public class DeviceListFragment extends Fragment {
             BluetoothDevice device = bluetoothDevices.get(position);
             stopScan();
 
-            // 1. Mémoriser le choix dans le manager
             ClimBluetoothManager btManager = ClimBluetoothManager.getInstance(requireContext());
-            btManager.setSelectedDeviceAddress(device.getAddress());
 
-            // 2. Tenter la connexion
+            btManager.setDeviceAddress(device.getAddress());
+
+
             btManager.connect();
 
             // 3. Naviguer vers le contrôle

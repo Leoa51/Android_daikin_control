@@ -23,7 +23,9 @@ public class ClimBluetoothManager {
     private static final String TAG = "ClimBTManager";
     private static ClimBluetoothManager instance;
 
-    private static final String DEVICE_MAC = "00:CC:3F:DC:6B:5C";
+    // MODIFICATION : Plus de constante finale, mais une variable
+    private String currentDeviceAddress = null;
+
     private static final UUID SERVICE_UUID = UUID.fromString("2141e110-213a-11e6-b67b-9e71128cae77");
     private static final UUID READ_CHAR_UUID = UUID.fromString("2141e111-213a-11e6-b67b-9e71128cae77");
     private static final UUID WRITE_CHAR_UUID = UUID.fromString("2141e112-213a-11e6-b67b-9e71128cae77");
@@ -60,6 +62,16 @@ public class ClimBluetoothManager {
         return instance;
     }
 
+    // NOUVELLE MÉTHODE : Définir l'adresse cible
+    public void setDeviceAddress(String address) {
+        this.currentDeviceAddress = address;
+    }
+
+    // NOUVELLE MÉTHODE : Récupérer l'adresse cible
+    public String getDeviceAddress() {
+        return currentDeviceAddress;
+    }
+
     public void addConnectionListener(ConnectionListener listener) {
         if (!connectionListeners.contains(listener)) {
             connectionListeners.add(listener);
@@ -90,6 +102,12 @@ public class ClimBluetoothManager {
             return;
         }
 
+        // VÉRIFICATION AJOUTÉE : Adresse valide requise
+        if (currentDeviceAddress == null) {
+            Log.e(TAG, "Aucune adresse d'appareil définie");
+            return;
+        }
+
         if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             Log.e(TAG, "Permission manquante");
             return;
@@ -105,9 +123,14 @@ public class ClimBluetoothManager {
             bluetoothGatt = null;
         }
 
-        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(DEVICE_MAC);
-        bluetoothGatt = device.connectGatt(context, false, gattCallback);
-        Log.d(TAG, "Connexion en cours...");
+        try {
+            // MODIFICATION : Utilisation de l'adresse dynamique
+            BluetoothDevice device = bluetoothAdapter.getRemoteDevice(currentDeviceAddress);
+            bluetoothGatt = device.connectGatt(context, false, gattCallback);
+            Log.d(TAG, "Connexion en cours vers " + currentDeviceAddress);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Adresse MAC invalide: " + currentDeviceAddress);
+        }
     }
 
     public void disconnect() {

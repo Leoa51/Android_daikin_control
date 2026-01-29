@@ -1,33 +1,23 @@
 package com.example.clim;
 
-import android. Manifest;
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGatt;
-import android.bluetooth.BluetoothGattCallback;
-import android. bluetooth.BluetoothGattCharacteristic;
-import android. bluetooth.BluetoothGattService;
-import android.bluetooth. BluetoothManager;
-import android.bluetooth.BluetoothProfile;
-import android.content. Context;
-import android.content. pm.PackageManager;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget. Button;
-import android.widget. Switch;
+import android.widget.Button;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
-import androidx. annotation.Nullable;
+import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 import androidx.fragment.app.Fragment;
-
-import java.util.UUID;
 
 public class HomeFragment extends Fragment {
 
@@ -38,237 +28,171 @@ public class HomeFragment extends Fragment {
     private Button buttonTempPlus;
     private Button buttonTempMinus;
 
-    private BluetoothAdapter bluetoothAdapter;
-    private BluetoothGatt bluetoothGatt;
-    private BluetoothGattCharacteristic writeCharacteristic;
-
-    private boolean isConnected = false;
+    // On utilise UNIQUEMENT le manager, pas de BluetoothAdapter/Gatt ici
+    private ClimBluetoothManager btManager;
     private int currentTemperature = 22;
 
-    private static final String DEVICE_MAC = "00:CC:3F:DC:6B:5C";
-    private static final UUID SERVICE_UUID = UUID. fromString("2141e110-213a-11e6-b67b-9e71128cae77");
-    private static final UUID WRITE_CHAR_UUID = UUID.fromString("2141e111-213a-11e6-b67b-9e71128cae77");
-
+    // Gestionnaire de permissions propre pour Android 12+ vs anciens
     private final ActivityResultLauncher<String[]> requestPermissionsLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
-                Boolean scanGranted = result.get(Manifest.permission.BLUETOOTH_SCAN);
-                Boolean connectGranted = result.get(Manifest.permission.BLUETOOTH_CONNECT);
-                Boolean locationGranted = result.get(Manifest. permission.ACCESS_FINE_LOCATION);
-
-                if (scanGranted != null && scanGranted &&
-                        connectGranted != null && connectGranted &&
-                        locationGranted != null && locationGranted) {
-                    connectToDevice();
+                boolean allGranted = true;
+                for (Boolean granted : result.values()) {
+                    if (!granted) {
+                        allGranted = false;
+                        break;
+                    }
+                }
+                if (allGranted) {
+                    connectViaManager();
                 } else {
-                    Toast.makeText(requireContext(), "Permissions refusées", Toast. LENGTH_SHORT).show();
+                    Toast.makeText(requireContext(), "Permissions refusées, connexion impossible", Toast.LENGTH_SHORT).show();
                 }
             });
 
     @Nullable
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
-        return inflater.inflate(R. layout.fragment_home, container, false);
+        return inflater.inflate(R.layout.fragment_home, container, false);
     }
 
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
+        // Initialisation UI
         textStatus = view.findViewById(R.id.textStatus);
-        textTemperature = view. findViewById(R.id.textTemperature);
-        switchOnOff = view.findViewById(R. id.switchOnOff);
+        textTemperature = view.findViewById(R.id.textTemperature);
+        switchOnOff = view.findViewById(R.id.switchOnOff);
         buttonConnect = view.findViewById(R.id.buttonConnect);
         buttonTempPlus = view.findViewById(R.id.buttonTempPlus);
         buttonTempMinus = view.findViewById(R.id.buttonTempMinus);
 
-        BluetoothManager bluetoothManager = (BluetoothManager) requireContext().getSystemService(Context. BLUETOOTH_SERVICE);
-        bluetoothAdapter = bluetoothManager. getAdapter();
+        // Récupération du Manager Singleton
+        btManager = ClimBluetoothManager.getInstance(requireContext());
 
-        if (bluetoothAdapter == null) {
-            Toast.makeText(requireContext(), "Bluetooth non supporté", Toast.LENGTH_SHORT).show();
-            return;
+        // Setup des listeners UI
+        setupClickListeners();
+
+        // Écouter les changements d'état du Bluetooth venant du Manager
+        btManager.addConnectionListener(connectionListener);
+
+        // Initialisation de l'état affiché
+        updateConnectionState(btManager.isConnected());
+        updateTemperatureDisplay();
+
+        // Tentative de connexion auto si on arrive depuis la liste
+        if (!btManager.isConnected() && btManager.getDeviceAddress() != null) {
+            checkPermissionsAndConnect();
+        }
+    }
+
+    private final ClimBluetoothManager.ConnectionListener connectionListener = new ClimBluetoothManager.ConnectionListener() {
+        @Override
+        public void onConnectionStateChanged(boolean connected) {
+            requireActivity().runOnUiThread(() -> {
+                updateConnectionState(connected);
+                if (connected) {
+                    Toast.makeText(requireContext(), "Connecté via Manager", Toast.LENGTH_SHORT).show();
+                }
+            });
         }
 
+        @Override
+        public void onServicesDiscovered() {
+            requireActivity().runOnUiThread(() -> textStatus.setText("Prêt à commander"));
+        }
+    };
+
+    private void setupClickListeners() {
         buttonConnect.setOnClickListener(v -> {
-            if (checkPermissions()) {
-                if (isConnected) {
-                    disconnect();
-                } else {
-                    connectToDevice();
-                }
+            if (btManager.isConnected()) {
+                btManager.disconnect();
             } else {
-                requestPermissionsLauncher.launch(new String[]{
-                        Manifest.permission. BLUETOOTH_SCAN,
-                        Manifest. permission.BLUETOOTH_CONNECT,
-                        Manifest.permission. ACCESS_FINE_LOCATION
-                });
+                checkPermissionsAndConnect();
             }
         });
 
-        buttonTempPlus. setOnClickListener(v -> {
-            if (currentTemperature < 30) {
+        buttonTempPlus.setOnClickListener(v -> {
+            if (currentTemperature < 32) {
                 currentTemperature++;
                 updateTemperatureDisplay();
-                sendTemperatureCommand();
+                if (btManager.isConnected()) {
+                    btManager.sendCommand(DaikinCommands.setTemperature(currentTemperature));
+                }
             }
         });
 
         buttonTempMinus.setOnClickListener(v -> {
-            if (currentTemperature > 18) {
+            if (currentTemperature > 16) {
                 currentTemperature--;
                 updateTemperatureDisplay();
-                sendTemperatureCommand();
-            }
-        });
-
-        switchOnOff.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (isConnected) {
-                sendPowerCommand(isChecked);
-            }
-        });
-    }
-
-    private boolean checkPermissions() {
-        return ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission. BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-                ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    private void connectToDevice() {
-        if (! checkPermissions()) {
-            Toast.makeText(requireContext(), "Permissions manquantes", Toast. LENGTH_SHORT).show();
-            return;
-        }
-
-        textStatus.setText("Connexion...");
-        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(DEVICE_MAC);
-        bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback);
-    }
-
-    private void disconnect() {
-        if (bluetoothGatt != null) {
-            if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-            bluetoothGatt.disconnect();
-            bluetoothGatt.close();
-            bluetoothGatt = null;
-        }
-        isConnected = false;
-        updateConnectionState();
-    }
-
-    private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
-        @Override
-        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-            if (ActivityCompat. checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-
-            if (newState == BluetoothProfile. STATE_CONNECTED) {
-                isConnected = true;
-                requireActivity().runOnUiThread(() -> textStatus.setText("Connecté - Découverte... "));
-                gatt.discoverServices();
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                isConnected = false;
-                requireActivity().runOnUiThread(() -> updateConnectionState());
-            }
-        }
-
-        @Override
-        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                BluetoothGattService service = gatt.getService(SERVICE_UUID);
-                if (service != null) {
-                    writeCharacteristic = service. getCharacteristic(WRITE_CHAR_UUID);
-                    if (writeCharacteristic != null) {
-                        requireActivity().runOnUiThread(() -> {
-                            textStatus. setText("Connecté");
-                            updateConnectionState();
-                            Toast.makeText(requireContext(), "Prêt", Toast.LENGTH_SHORT).show();
-                        });
-                    } else {
-                        requireActivity().runOnUiThread(() -> {
-                            textStatus.setText("Erreur caractéristique");
-                            Toast.makeText(requireContext(), "Caractéristique non trouvée", Toast.LENGTH_LONG).show();
-                        });
-                    }
-                } else {
-                    requireActivity().runOnUiThread(() -> {
-                        textStatus.setText("Service non trouvé");
-                        Toast.makeText(requireContext(), "Service UUID non trouvé", Toast.LENGTH_LONG).show();
-                    });
+                if (btManager.isConnected()) {
+                    btManager.sendCommand(DaikinCommands.setTemperature(currentTemperature));
                 }
             }
+        });
+
+        switchOnOff.setOnClickListener(v -> {
+            boolean turnOn = switchOnOff.isChecked();
+            if (btManager.isConnected()) {
+                if (turnOn) {
+                    btManager.sendCommand(DaikinCommands.powerOn());
+                } else {
+                    btManager.sendCommand(DaikinCommands.powerOff());
+                }
+            } else {
+                // Si pas connecté, on remet le switch à sa position précédente visuellement
+                switchOnOff.setChecked(!turnOn);
+                Toast.makeText(requireContext(), "Non connecté", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void checkPermissionsAndConnect() {
+        // Vérification adresse MAC
+        if (btManager.getDeviceAddress() == null) {
+            Toast.makeText(requireContext(), "Aucun appareil sélectionné. Allez dans 'Scan'", Toast.LENGTH_LONG).show();
+            return;
         }
 
-        @Override
-        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), "Commande envoyée", Toast.LENGTH_SHORT).show());
+        if (hasPermissions()) {
+            connectViaManager();
+        } else {
+            // Demande les permissions selon la version d'Android
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                requestPermissionsLauncher.launch(new String[]{
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                });
             } else {
-                requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), "Échec envoi", Toast.LENGTH_SHORT).show());
+                requestPermissionsLauncher.launch(new String[]{
+                        Manifest.permission.BLUETOOTH,
+                        Manifest.permission.BLUETOOTH_ADMIN,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                });
             }
         }
-    };
-
-    private void sendTemperatureCommand() {
-        if (! isConnected || writeCharacteristic == null) {
-            Toast. makeText(requireContext(), "Non connecté", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        byte[] command = buildTemperatureCommand(currentTemperature);
-
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-
-        writeCharacteristic.setValue(command);
-        bluetoothGatt.writeCharacteristic(writeCharacteristic);
     }
 
-    private void sendPowerCommand(boolean powerOn) {
-        if (!isConnected || writeCharacteristic == null) {
-            Toast.makeText(requireContext(), "Non connecté", Toast.LENGTH_SHORT).show();
-            return;
+    private boolean hasPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                    ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
+        } else {
+            return ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         }
-
-        byte[] command = buildPowerCommand(powerOn);
-
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission. BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-
-        writeCharacteristic.setValue(command);
-        bluetoothGatt.writeCharacteristic(writeCharacteristic);
     }
 
-    private byte[] buildTemperatureCommand(int temperature) {
-        return new byte[]{
-                0x40, 0x00, 0x11,
-                (byte) (temperature * 2),
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-        };
+    private void connectViaManager() {
+        textStatus.setText("Connexion en cours...");
+        btManager.connect();
     }
 
-    private byte[] buildPowerCommand(boolean powerOn) {
-        return new byte[]{
-                0x40, 0x00, 0x01,
-                (byte) (powerOn ? 0x01 :  0x00),
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-        };
-    }
+    private void updateConnectionState(boolean isConnected) {
+        textStatus.setText(isConnected ? "Connecté (" + btManager.getDeviceAddress() + ")" : "Déconnecté");
+        buttonConnect.setText(isConnected ? "Déconnecter" : "Connecter");
 
-    private void updateConnectionState() {
-        buttonConnect. setText(isConnected ? "Déconnecter" : "Connecter");
-        textStatus. setText(isConnected ? "Connecté" : "Déconnecté");
+        // On active/désactive les boutons pour éviter les commandes dans le vide
         switchOnOff.setEnabled(isConnected);
         buttonTempPlus.setEnabled(isConnected);
         buttonTempMinus.setEnabled(isConnected);
@@ -281,6 +205,9 @@ public class HomeFragment extends Fragment {
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        disconnect();
+        // Important : retirer le listener pour éviter les fuites de mémoire ou crashs
+        if (btManager != null) {
+            btManager.removeConnectionListener(connectionListener);
+        }
     }
 }

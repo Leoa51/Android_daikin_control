@@ -265,7 +265,7 @@ public class NotificationHttpService extends Service {
             }
 
             boolean success = false;
-            String response = "Commande inconnue";
+            String response = "Commande inconnue, commandes fonctionnelles : ON, OFF, MODE, TEMP, FAN, SWING, POWERFUL, ECONO, STREAMER, COMFORT, BRIGHTNESS, LOCK, STATUS, ROOMTEMP, OUTDOORTEMP";
 
             switch (command.toUpperCase()) {
                 case "ON":
@@ -515,7 +515,7 @@ public class NotificationHttpService extends Service {
                     break;
 
                 default:
-                    sendResponse(out, 400, "Erreur: commande inconnue - " + command);
+                    sendResponse(out, 400, "Commande inconnue, commandes fonctionnelles : ON, OFF, MODE, TEMP, FAN, SWING, POWERFUL, ECONO, STREAMER, COMFORT, BRIGHTNESS, LOCK, STATUS, ROOMTEMP, OUTDOORTEMP - " + command);
                     return;
             }
 

@@ -95,11 +95,8 @@ public class TestFragment extends Fragment {
 
         createNotificationChannel();
 
-        // Récupération de l'instance unique
         btManager = ClimBluetoothManager.getInstance(requireContext());
 
-        // 1. SYNCHRONISATION INITIALE
-        // On vérifie immédiatement l'état réel du Manager au lieu de supposer "false"
         isConnected = btManager.isConnected();
         updateConnectionState();
         if (isConnected) {
